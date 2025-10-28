@@ -67,23 +67,37 @@ test:
     - merge_requests
 
 # ==============================================
-# STAGE 3: BUILD & PUSH DOCKER IMAGES
+# STAGE 3: BUILD & PUSH DOCKER IMAGES (BuildKit Rootless)
 # ==============================================
 build:
   stage: build
-  image: docker:24
-  services:
-    - docker:24-dind
+  image:
+    name: moby/buildkit:rootless
+    entrypoint: [""]
   variables:
-    DOCKER_DRIVER: overlay2
-    DOCKER_TLS_CERTDIR: "/certs"
+    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
   before_script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+    # Create Docker auth config for BuildKit rootless
+    - mkdir -p ~/.docker
+    - echo "{\"auths\":{\"$CI_REGISTRY\":{\"auth\":\"$(printf "%s:%s" "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')\"}}}" > ~/.docker/config.json
   script:
-    - docker build -t $SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA .
-    - docker build -t $SERVICE_IMAGE:latest .
-    - docker push $SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA
-    - docker push $SERVICE_IMAGE:latest
+    # Build and push with commit SHA tag (with cache)
+    - |
+      buildctl-daemonless.sh build \
+        --frontend=dockerfile.v0 \
+        --local context=. \
+        --local dockerfile=. \
+        --output type=image,name=$SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA,push=true \
+        --export-cache type=registry,ref=$SERVICE_IMAGE:buildcache \
+        --import-cache type=registry,ref=$SERVICE_IMAGE:buildcache
+    # Build and push latest tag (reusing cache)
+    - |
+      buildctl-daemonless.sh build \
+        --frontend=dockerfile.v0 \
+        --local context=. \
+        --local dockerfile=. \
+        --output type=image,name=$SERVICE_IMAGE:latest,push=true \
+        --import-cache type=registry,ref=$SERVICE_IMAGE:buildcache
   only:
     - main
     - develop
