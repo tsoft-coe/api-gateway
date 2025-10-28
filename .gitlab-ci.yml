@@ -72,13 +72,6 @@ test:
 build:
   stage: build
   image: docker:24
-  services:
-    - docker:24-dind
-  variables:
-    DOCKER_HOST: tcp://docker:2376
-    DOCKER_TLS_CERTDIR: "/certs"
-    DOCKER_TLS_VERIFY: 1
-    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
   before_script:
     - echo "Logging into GitLab Container Registry..."
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
@@ -88,7 +81,7 @@ build:
     - docker build -t $SERVICE_IMAGE:latest .
     - docker push $SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA
     - docker push $SERVICE_IMAGE:latest
-    - echo "Image pushed successfully"
+    - echo "Build completed"
   only:
     - main
     - develop
