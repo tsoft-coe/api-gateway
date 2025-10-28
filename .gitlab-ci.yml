@@ -83,7 +83,6 @@ build:
     - docker push $SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA
     - docker push $SERVICE_IMAGE:latest
     - echo "Image pushed successfully"
-    - echo "Image: $SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA"
   only:
     - main
     - develop
