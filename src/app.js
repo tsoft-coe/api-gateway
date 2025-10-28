@@ -6,7 +6,7 @@ const compression = require('compression');
 const morgan = require('morgan');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const rateLimit = require('express-rate-limit');
-const RedisStore = require('rate-limit-redis');
+const { RedisStore } = require('rate-limit-redis');
 const { createClient } = require('redis');
 
 const logger = require('./utils/logger');

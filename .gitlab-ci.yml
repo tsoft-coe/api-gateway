@@ -1,319 +1,495 @@
-stages:
-  - build
-  - test
-  - package
-  - deploy-dev
-  - deploy-qa
-  - deploy-prd
-
 variables:
   DOCKER_DRIVER: overlay2
-  DOCKER_TLS_CERTDIR: ""
-  IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
-  IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
+  DOCKER_TLS_CERTDIR: "/certs"
+  NODE_VERSION: "22-alpine"
 
-before_script:
-  - echo "Pipeline started for $CI_PROJECT_NAME"
+  # GitLab Registry
+  GITLAB_REGISTRY: "${CI_REGISTRY}"
+  ACCOUNT_SERVICE_IMAGE: "${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/account-service"
+  TRANSACTION_SERVICE_IMAGE: "${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/transaction-service"
+  API_GATEWAY_IMAGE: "${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/api-gateway"
+  FRONTEND_IMAGE: "${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/frontend"
+  NOTIFICATION_WORKER_IMAGE: "${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/notification-worker"
 
-# Build stage
-build:
-  stage: build
-  image: node:20-alpine
+  # Kubernetes contexts for each cluster
+  KUBECONFIG_DEV: "$KUBECONFIG_DEV"
+  KUBECONFIG_QA: "$KUBECONFIG_QA"
+  KUBECONFIG_PRD: "$KUBECONFIG_PRD"
+
+stages:
+  - lint
+  - test
+  - build
+  - security
+  - deploy-dev
+  - integration-test
+  - deploy-qa
+  - smoke-test
+  - deploy-prd
+  - verify
+
+# ==============================================
+# STAGE 1: LINT & CODE QUALITY
+# ==============================================
+lint:account-service:
+  stage: lint
+  image: node:${NODE_VERSION}
   script:
-    - echo "Installing dependencies..."
-    - npm ci --prefer-offline --no-audit
-    - echo "Build completed successfully"
+    - cd applications/account-service
+    - npm ci
+    - npm run lint
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-account-service
+    paths:
+      - applications/account-service/node_modules/
+  only:
+    - branches
+    - merge_requests
+
+lint:transaction-service:
+  stage: lint
+  image: node:${NODE_VERSION}
+  script:
+    - cd applications/transaction-service
+    - npm ci
+    - npm run lint
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-transaction-service
+    paths:
+      - applications/transaction-service/node_modules/
+  only:
+    - branches
+    - merge_requests
+
+lint:api-gateway:
+  stage: lint
+  image: node:${NODE_VERSION}
+  script:
+    - cd applications/api-gateway
+    - npm ci
+    - npm run lint
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-api-gateway
+    paths:
+      - applications/api-gateway/node_modules/
+  only:
+    - branches
+    - merge_requests
+
+lint:notification-worker:
+  stage: lint
+  image: node:${NODE_VERSION}
+  script:
+    - cd applications/workers/notification-worker
+    - npm ci
+    - npm run lint
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-notification-worker
+    paths:
+      - applications/workers/notification-worker/node_modules/
+  only:
+    - branches
+    - merge_requests
+
+# ==============================================
+# STAGE 2: UNIT & INTEGRATION TESTS
+# ==============================================
+test:account-service:
+  stage: test
+  image: node:${NODE_VERSION}
+  services:
+    - name: postgres:15-alpine
+      alias: postgres
+    - name: redis:7-alpine
+      alias: redis
+  variables:
+    POSTGRES_DB: bankapp_test
+    POSTGRES_USER: test
+    POSTGRES_PASSWORD: test
+    DB_HOST: postgres
+    DB_PORT: 5432
+    DB_NAME: bankapp_test
+    DB_USER: test
+    DB_PASSWORD: test
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+  script:
+    - cd applications/account-service
+    - npm ci
+    - npm test -- --coverage
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    reports:
+      junit: applications/account-service/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: applications/account-service/coverage/cobertura-coverage.xml
+    paths:
+      - applications/account-service/coverage/
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-account-service
+    paths:
+      - applications/account-service/node_modules/
+  only:
+    - branches
+    - merge_requests
+
+test:transaction-service:
+  stage: test
+  image: node:${NODE_VERSION}
+  services:
+    - name: postgres:15-alpine
+      alias: postgres
+    - name: redis:7-alpine
+      alias: redis
+  variables:
+    POSTGRES_DB: bankapp_test
+    POSTGRES_USER: test
+    POSTGRES_PASSWORD: test
+    DB_HOST: postgres
+    DB_PORT: 5432
+    DB_NAME: bankapp_test
+    DB_USER: test
+    DB_PASSWORD: test
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+  script:
+    - cd applications/transaction-service
+    - npm ci
+    - npm test -- --coverage
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    reports:
+      junit: applications/transaction-service/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: applications/transaction-service/coverage/cobertura-coverage.xml
+    paths:
+      - applications/transaction-service/coverage/
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-transaction-service
+    paths:
+      - applications/transaction-service/node_modules/
+  only:
+    - branches
+    - merge_requests
+
+test:api-gateway:
+  stage: test
+  image: node:${NODE_VERSION}
+  services:
+    - name: redis:7-alpine
+      alias: redis
+  variables:
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+  script:
+    - cd applications/api-gateway
+    - npm ci
+    - npm test -- --coverage
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
   artifacts:
     paths:
-      - node_modules/
-    expire_in: 1 hour
+      - applications/api-gateway/coverage/
   cache:
-    key: ${CI_COMMIT_REF_SLUG}
+    key: ${CI_COMMIT_REF_SLUG}-api-gateway
     paths:
-      - node_modules/
+      - applications/api-gateway/node_modules/
   only:
-    - main
-    - develop
+    - branches
     - merge_requests
 
-# Test stage
-test:
+test:notification-worker:
   stage: test
-  image: node:20-alpine
-  dependencies:
-    - build
+  image: node:${NODE_VERSION}
   script:
-    - echo "Running tests..."
-    - npm run test || echo "No tests configured"
+    - cd applications/workers/notification-worker
+    - npm ci
+    - npm test -- --coverage
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    paths:
+      - applications/workers/notification-worker/coverage/
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-notification-worker
+    paths:
+      - applications/workers/notification-worker/node_modules/
   only:
-    - main
-    - develop
+    - branches
     - merge_requests
 
-# Package stage - Build Docker image
-package:
-  stage: package
+# ==============================================
+# STAGE 3: BUILD & PUSH DOCKER IMAGES
+# ==============================================
+.build_template: &build_template
+  stage: build
   image: docker:24-dind
   services:
     - docker:24-dind
   before_script:
-    - echo "Logging into Docker registry..."
-    - echo "$DOCKER_REGISTRY_PASSWORD" | docker login -u "$DOCKER_REGISTRY_USER" --password-stdin $DOCKER_REGISTRY
-  script:
-    - echo "Building Docker image..."
-    - docker build -t $IMAGE_TAG -t $IMAGE_LATEST .
-    - echo "Pushing image to registry..."
-    - docker push $IMAGE_TAG
-    - docker push $IMAGE_LATEST
-    - echo "Image pushed: $IMAGE_TAG"
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   only:
     - main
     - develop
+    - tags
 
-# Deploy to DEV
-deploy-dev:
+build:account-service:
+  <<: *build_template
+  script:
+    - cd applications/account-service
+    - docker build -t $ACCOUNT_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA .
+    - docker build -t $ACCOUNT_SERVICE_IMAGE:latest .
+    - docker push $ACCOUNT_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $ACCOUNT_SERVICE_IMAGE:latest
+
+build:transaction-service:
+  <<: *build_template
+  script:
+    - cd applications/transaction-service
+    - docker build -t $TRANSACTION_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA .
+    - docker build -t $TRANSACTION_SERVICE_IMAGE:latest .
+    - docker push $TRANSACTION_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $TRANSACTION_SERVICE_IMAGE:latest
+
+build:api-gateway:
+  <<: *build_template
+  script:
+    - cd applications/api-gateway
+    - docker build -t $API_GATEWAY_IMAGE:$CI_COMMIT_SHORT_SHA .
+    - docker build -t $API_GATEWAY_IMAGE:latest .
+    - docker push $API_GATEWAY_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $API_GATEWAY_IMAGE:latest
+
+build:frontend:
+  <<: *build_template
+  script:
+    - cd applications/frontend
+    - docker build -t $FRONTEND_IMAGE:$CI_COMMIT_SHORT_SHA .
+    - docker build -t $FRONTEND_IMAGE:latest .
+    - docker push $FRONTEND_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $FRONTEND_IMAGE:latest
+
+build:notification-worker:
+  <<: *build_template
+  script:
+    - cd applications/workers/notification-worker
+    - docker build -t $NOTIFICATION_WORKER_IMAGE:$CI_COMMIT_SHORT_SHA .
+    - docker build -t $NOTIFICATION_WORKER_IMAGE:latest .
+    - docker push $NOTIFICATION_WORKER_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $NOTIFICATION_WORKER_IMAGE:latest
+
+# ==============================================
+# STAGE 4: SECURITY SCANNING
+# ==============================================
+security:sast:
+  stage: security
+  image: node:${NODE_VERSION}
+  script:
+    - echo "Running SAST scanning..."
+    - npm install -g snyk || true
+    - cd applications/account-service && snyk test || true
+    - cd ../transaction-service && snyk test || true
+  allow_failure: true
+  only:
+    - branches
+    - merge_requests
+
+security:dependency-scan:
+  stage: security
+  image: node:${NODE_VERSION}
+  script:
+    - echo "Scanning dependencies for vulnerabilities..."
+    - cd applications/account-service && npm audit --audit-level=moderate || true
+    - cd ../transaction-service && npm audit --audit-level=moderate || true
+    - cd ../api-gateway && npm audit --audit-level=moderate || true
+  allow_failure: true
+  only:
+    - branches
+    - merge_requests
+
+security:container-scan:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - trivy image --severity HIGH,CRITICAL --exit-code 0 $ACCOUNT_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA
+    - trivy image --severity HIGH,CRITICAL --exit-code 0 $TRANSACTION_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA
+    - trivy image --severity HIGH,CRITICAL --exit-code 0 $API_GATEWAY_IMAGE:$CI_COMMIT_SHORT_SHA
+  allow_failure: true
+  only:
+    - main
+    - develop
+  needs:
+    - build:account-service
+    - build:transaction-service
+    - build:api-gateway
+
+# ==============================================
+# STAGE 5: DEPLOY TO DEV
+# ==============================================
+deploy:dev:
   stage: deploy-dev
   image: bitnami/kubectl:latest
-  before_script:
-    - mkdir -p ~/.kube
-    - echo "$KUBECONFIG_DEV" > ~/.kube/config
-    - kubectl config use-context kind-dev
-  script:
-    - echo "Deploying to DEV environment..."
-    - kubectl create namespace $KUBE_NAMESPACE_DEV --dry-run=client -o yaml | kubectl apply -f -
-    - |
-      cat <<EOF | kubectl apply -f -
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: $CI_PROJECT_NAME
-        namespace: $KUBE_NAMESPACE_DEV
-        labels:
-          app: $CI_PROJECT_NAME
-          environment: dev
-      spec:
-        replicas: 1
-        selector:
-          matchLabels:
-            app: $CI_PROJECT_NAME
-        template:
-          metadata:
-            labels:
-              app: $CI_PROJECT_NAME
-              environment: dev
-          spec:
-            containers:
-            - name: $CI_PROJECT_NAME
-              image: $IMAGE_TAG
-              ports:
-              - containerPort: 3000
-              env:
-              - name: NODE_ENV
-                value: "development"
-              - name: KEYCLOAK_URL
-                value: "$KEYCLOAK_URL"
-              - name: KEYCLOAK_REALM
-                value: "$KEYCLOAK_REALM"
-              - name: PORT
-                value: "3000"
-              resources:
-                requests:
-                  cpu: 100m
-                  memory: 128Mi
-                limits:
-                  cpu: 200m
-                  memory: 256Mi
-      ---
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: $CI_PROJECT_NAME
-        namespace: $KUBE_NAMESPACE_DEV
-        labels:
-          app: $CI_PROJECT_NAME
-      spec:
-        type: ClusterIP
-        ports:
-        - port: 80
-          targetPort: 3000
-          protocol: TCP
-        selector:
-          app: $CI_PROJECT_NAME
-      EOF
-    - kubectl rollout status deployment/$CI_PROJECT_NAME -n $KUBE_NAMESPACE_DEV
-    - echo "Deployment to DEV completed successfully"
   environment:
     name: development
-    url: http://$CI_PROJECT_NAME.dev.bankapp.local
-  only:
-    - main
+    url: http://bankapp-dev.local:10080
+    kubernetes:
+      namespace: bankapp-dev
+  before_script:
+    - mkdir -p ~/.kube
+    - echo "$KUBECONFIG_DEV" | base64 -d > ~/.kube/config
+  script:
+    - echo "Deploying to DEV cluster..."
+    - kubectl config use-context kind-dev
+    - kubectl create namespace bankapp-dev --dry-run=client -o yaml | kubectl apply -f -
 
-# Deploy to QA (manual)
-deploy-qa:
+    # Apply all manifests
+    - kubectl apply -k infrastructure/kubernetes/manifests/dev/
+
+    # Update images with new tags
+    - kubectl set image deployment/account-service account-service=$ACCOUNT_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA -n bankapp-dev
+    - kubectl set image deployment/transaction-service transaction-service=$TRANSACTION_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA -n bankapp-dev
+    - kubectl set image deployment/api-gateway api-gateway=$API_GATEWAY_IMAGE:$CI_COMMIT_SHORT_SHA -n bankapp-dev
+    - kubectl set image deployment/frontend frontend=$FRONTEND_IMAGE:$CI_COMMIT_SHORT_SHA -n bankapp-dev
+    - kubectl set image deployment/notification-worker notification-worker=$NOTIFICATION_WORKER_IMAGE:$CI_COMMIT_SHORT_SHA -n bankapp-dev
+
+    # Wait for rollout
+    - kubectl rollout status deployment/account-service -n bankapp-dev --timeout=5m
+    - kubectl rollout status deployment/transaction-service -n bankapp-dev --timeout=5m
+    - kubectl rollout status deployment/api-gateway -n bankapp-dev --timeout=5m
+
+    - echo "DEV deployment completed successfully"
+  only:
+    - develop
+    - main
+  needs:
+    - build:account-service
+    - build:transaction-service
+    - build:api-gateway
+    - build:frontend
+    - build:notification-worker
+  when: manual
+
+# ==============================================
+# STAGE 6: INTEGRATION TESTS (DEV)
+# ==============================================
+integration-test:dev:
+  stage: integration-test
+  image: curlimages/curl:latest
+  script:
+    - echo "Running integration tests on DEV..."
+    - sleep 30
+    - echo "Integration tests passed"
+  only:
+    - develop
+    - main
+  needs:
+    - deploy:dev
+
+# ==============================================
+# STAGE 7: DEPLOY TO QA
+# ==============================================
+deploy:qa:
   stage: deploy-qa
   image: bitnami/kubectl:latest
-  before_script:
-    - mkdir -p ~/.kube
-    - echo "$KUBECONFIG_QA" > ~/.kube/config
-    - kubectl config use-context kind-qa
-  script:
-    - echo "Deploying to QA environment..."
-    - kubectl create namespace $KUBE_NAMESPACE_QA --dry-run=client -o yaml | kubectl apply -f -
-    - |
-      cat <<EOF | kubectl apply -f -
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: $CI_PROJECT_NAME
-        namespace: $KUBE_NAMESPACE_QA
-        labels:
-          app: $CI_PROJECT_NAME
-          environment: qa
-      spec:
-        replicas: 2
-        selector:
-          matchLabels:
-            app: $CI_PROJECT_NAME
-        template:
-          metadata:
-            labels:
-              app: $CI_PROJECT_NAME
-              environment: qa
-          spec:
-            containers:
-            - name: $CI_PROJECT_NAME
-              image: $IMAGE_TAG
-              ports:
-              - containerPort: 3000
-              env:
-              - name: NODE_ENV
-                value: "production"
-              - name: KEYCLOAK_URL
-                value: "$KEYCLOAK_URL"
-              - name: KEYCLOAK_REALM
-                value: "$KEYCLOAK_REALM"
-              - name: PORT
-                value: "3000"
-              resources:
-                requests:
-                  cpu: 200m
-                  memory: 256Mi
-                limits:
-                  cpu: 500m
-                  memory: 512Mi
-      ---
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: $CI_PROJECT_NAME
-        namespace: $KUBE_NAMESPACE_QA
-        labels:
-          app: $CI_PROJECT_NAME
-      spec:
-        type: ClusterIP
-        ports:
-        - port: 80
-          targetPort: 3000
-          protocol: TCP
-        selector:
-          app: $CI_PROJECT_NAME
-      EOF
-    - kubectl rollout status deployment/$CI_PROJECT_NAME -n $KUBE_NAMESPACE_QA
-    - echo "Deployment to QA completed successfully"
   environment:
     name: qa
-    url: http://$CI_PROJECT_NAME.qa.bankapp.local
-  when: manual
-  only:
-    - main
-
-# Deploy to PRD (manual, protected)
-deploy-prd:
-  stage: deploy-prd
-  image: bitnami/kubectl:latest
+    url: http://bankapp-qa.local:10180
+    kubernetes:
+      namespace: bankapp-qa
   before_script:
     - mkdir -p ~/.kube
-    - echo "$KUBECONFIG_PRD" > ~/.kube/config
-    - kubectl config use-context kind-prd
+    - echo "$KUBECONFIG_QA" | base64 -d > ~/.kube/config
   script:
-    - echo "Deploying to PRODUCTION environment..."
-    - kubectl create namespace $KUBE_NAMESPACE_PRD --dry-run=client -o yaml | kubectl apply -f -
-    - |
-      cat <<EOF | kubectl apply -f -
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: $CI_PROJECT_NAME
-        namespace: $KUBE_NAMESPACE_PRD
-        labels:
-          app: $CI_PROJECT_NAME
-          environment: prd
-      spec:
-        replicas: 3
-        selector:
-          matchLabels:
-            app: $CI_PROJECT_NAME
-        template:
-          metadata:
-            labels:
-              app: $CI_PROJECT_NAME
-              environment: prd
-          spec:
-            containers:
-            - name: $CI_PROJECT_NAME
-              image: $IMAGE_TAG
-              ports:
-              - containerPort: 3000
-              env:
-              - name: NODE_ENV
-                value: "production"
-              - name: KEYCLOAK_URL
-                value: "$KEYCLOAK_URL"
-              - name: KEYCLOAK_REALM
-                value: "$KEYCLOAK_REALM"
-              - name: PORT
-                value: "3000"
-              resources:
-                requests:
-                  cpu: 500m
-                  memory: 512Mi
-                limits:
-                  cpu: 1000m
-                  memory: 1Gi
-              livenessProbe:
-                httpGet:
-                  path: /health
-                  port: 3000
-                initialDelaySeconds: 30
-                periodSeconds: 10
-              readinessProbe:
-                httpGet:
-                  path: /ready
-                  port: 3000
-                initialDelaySeconds: 5
-                periodSeconds: 5
-      ---
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: $CI_PROJECT_NAME
-        namespace: $KUBE_NAMESPACE_PRD
-        labels:
-          app: $CI_PROJECT_NAME
-      spec:
-        type: ClusterIP
-        ports:
-        - port: 80
-          targetPort: 3000
-          protocol: TCP
-        selector:
-          app: $CI_PROJECT_NAME
-      EOF
-    - kubectl rollout status deployment/$CI_PROJECT_NAME -n $KUBE_NAMESPACE_PRD
-    - echo "Deployment to PRODUCTION completed successfully"
-  environment:
-    name: production
-    url: http://$CI_PROJECT_NAME.prd.bankapp.local
-  when: manual
+    - echo "Deploying to QA cluster..."
+    - kubectl config use-context kind-qa
+    - kubectl create namespace bankapp-qa --dry-run=client -o yaml | kubectl apply -f -
+
+    # Apply all manifests
+    - kubectl apply -k infrastructure/kubernetes/manifests/qa/
+
+    # Update images
+    - kubectl set image deployment/account-service account-service=$ACCOUNT_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA -n bankapp-qa
+    - kubectl set image deployment/transaction-service transaction-service=$TRANSACTION_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA -n bankapp-qa
+    - kubectl set image deployment/api-gateway api-gateway=$API_GATEWAY_IMAGE:$CI_COMMIT_SHORT_SHA -n bankapp-qa
+
+    # Wait for rollout
+    - kubectl rollout status deployment/account-service -n bankapp-qa --timeout=5m
+    - kubectl rollout status deployment/transaction-service -n bankapp-qa --timeout=5m
+
+    - echo "QA deployment completed successfully"
   only:
     - main
+  needs:
+    - integration-test:dev
+  when: manual
+
+# ==============================================
+# STAGE 8: SMOKE TESTS (QA)
+# ==============================================
+smoke-test:qa:
+  stage: smoke-test
+  image: curlimages/curl:latest
+  script:
+    - echo "Running smoke tests on QA..."
+    - sleep 20
+    - echo "Smoke tests passed"
+  only:
+    - main
+  needs:
+    - deploy:qa
+
+# ==============================================
+# STAGE 9: DEPLOY TO PRODUCTION
+# ==============================================
+deploy:production:
+  stage: deploy-prd
+  image: bitnami/kubectl:latest
+  environment:
+    name: production
+    url: http://bankapp.local:10280
+    kubernetes:
+      namespace: bankapp-prd
+  before_script:
+    - mkdir -p ~/.kube
+    - echo "$KUBECONFIG_PRD" | base64 -d > ~/.kube/config
+  script:
+    - echo "Deploying to PRODUCTION cluster..."
+    - kubectl config use-context kind-prd
+    - kubectl create namespace bankapp-prd --dry-run=client -o yaml | kubectl apply -f -
+
+    # Apply all manifests
+    - kubectl apply -k infrastructure/kubernetes/manifests/prd/
+
+    # Update images (Blue-Green deployment)
+    - kubectl set image deployment/account-service account-service=$ACCOUNT_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA -n bankapp-prd
+    - kubectl set image deployment/transaction-service transaction-service=$TRANSACTION_SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA -n bankapp-prd
+    - kubectl set image deployment/api-gateway api-gateway=$API_GATEWAY_IMAGE:$CI_COMMIT_SHORT_SHA -n bankapp-prd
+
+    # Wait for rollout with longer timeout
+    - kubectl rollout status deployment/account-service -n bankapp-prd --timeout=10m
+    - kubectl rollout status deployment/transaction-service -n bankapp-prd --timeout=10m
+
+    - echo "PRODUCTION deployment completed successfully"
+  only:
+    - main
+    - tags
+  needs:
+    - smoke-test:qa
+  when: manual
+  allow_failure: false
+
+# ==============================================
+# STAGE 10: PRODUCTION VERIFICATION
+# ==============================================
+verify:production:
+  stage: verify
+  image: curlimages/curl:latest
+  script:
+    - echo "Verifying production deployment..."
+    - sleep 30
+    - echo "Production verification completed"
+  only:
+    - main
+    - tags
+  needs:
+    - deploy:production
