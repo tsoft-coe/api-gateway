@@ -80,24 +80,35 @@ build:
     # Create Docker auth config for BuildKit rootless
     - mkdir -p ~/.docker
     - echo "{\"auths\":{\"$CI_REGISTRY\":{\"auth\":\"$(printf "%s:%s" "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')\"}}}" > ~/.docker/config.json
+    # Configure BuildKit to allow HTTP registry (insecure for development)
+    - |
+      cat > /tmp/buildkitd.toml <<EOF
+      [registry."gitlab.bankapp.local:5050"]
+        http = true
+        insecure = true
+      EOF
   script:
     # Build and push with commit SHA tag (with cache)
     - |
-      buildctl-daemonless.sh build \
+      buildctl-daemonless.sh \
+        --config=/tmp/buildkitd.toml \
+        build \
         --frontend=dockerfile.v0 \
         --local context=. \
         --local dockerfile=. \
-        --output type=image,name=$SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA,push=true \
-        --export-cache type=registry,ref=$SERVICE_IMAGE:buildcache \
-        --import-cache type=registry,ref=$SERVICE_IMAGE:buildcache
+        --output type=image,name=$SERVICE_IMAGE:$CI_COMMIT_SHORT_SHA,push=true,registry.insecure=true \
+        --export-cache type=registry,ref=$SERVICE_IMAGE:buildcache,registry.insecure=true \
+        --import-cache type=registry,ref=$SERVICE_IMAGE:buildcache,registry.insecure=true
     # Build and push latest tag (reusing cache)
     - |
-      buildctl-daemonless.sh build \
+      buildctl-daemonless.sh \
+        --config=/tmp/buildkitd.toml \
+        build \
         --frontend=dockerfile.v0 \
         --local context=. \
         --local dockerfile=. \
-        --output type=image,name=$SERVICE_IMAGE:latest,push=true \
-        --import-cache type=registry,ref=$SERVICE_IMAGE:buildcache
+        --output type=image,name=$SERVICE_IMAGE:latest,push=true,registry.insecure=true \
+        --import-cache type=registry,ref=$SERVICE_IMAGE:buildcache,registry.insecure=true
   only:
     - main
     - develop
