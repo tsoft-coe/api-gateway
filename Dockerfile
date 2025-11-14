@@ -16,9 +16,15 @@ COPY . .
 
 # Run linting and tests
 RUN npm run lint || true
+RUN npm test || true
 
 # Stage 2: Production
 FROM node:22-alpine
+
+# Metadata labels
+LABEL maintainer="BankApp Team"
+LABEL version="1.0.0"
+LABEL description="BankApp API Gateway - Authentication, routing, and rate limiting"
 
 # Install dumb-init for proper signal handling
 RUN apk add --no-cache dumb-init
